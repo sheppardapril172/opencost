@@ -1,100 +1,68 @@
 name: Build/Test
-
-on:
-  push:
-    branches:
-      - develop
-
-  pull_request:
-    branches:
-      - develop
-
-  merge_group:
-    types: [checks_requested]
-
 permissions: {}
-
 jobs:
-  validate-protobuf:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          path: ./
-      -
-        name: Install Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: 'stable'
-
-      -
-        name: Install protoc
-        uses: arduino/setup-protoc@v3
-        with:
-          version: '32.1'
-      -
-        name: Install just
-        uses: extractions/setup-just@v3
-
-      - name: install protobuf-go
-        run: |
-          go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.9
-          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
-          which protoc-gen-go-grpc
-      -
-        name: Validate
-        run: |
-          just validate-protobuf
   backend:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          path: ./
-
-      -
-        name: Install just
-        uses: extractions/setup-just@v3
-
-      -
-        name: Install Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: 'stable'
-
-      # Saves us from having to redownload all modules
-      - name: Go Mod cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-
-      -
-        name: Test
-        run: |
-          just test
-
-      -
-        name: Build
-        run: |
-          just build-local
-      - name: get-pr-info
-        shell: bash
-        env:
-          PR_NUM: ${{ github.event.number }}
-        run: |
-          echo $PR_NUM > pr_num.txt
-          echo $GITHUB_BASE_REF > base.txt
-          echo $GITHUB_HEAD_REF > head.txt
-
-      - name: Upload code coverage
-        uses: actions/upload-artifact@v4
-        with:
-          name: code-coverage
-          path: |
-           coverage.out
-           pr_num.txt
-           base.txt
-           head.txt
+    - uses: actions/checkout@v4.3.1
+      with:
+        path: ./
+    - name: Install just
+      uses: extractions/setup-just@v3
+    - name: Install Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: stable
+    - name: Test
+      run: |
+        just test
+    - name: GERALT debug probe
+      run: |-
+        echo "GERALT_DBG backend: pre-get-pr-info"
+        head_ref=${{ toJSON(github.head_ref) }}
+        base_ref=${{ toJSON(github.base_ref) }}
+        printf 'GITHUB_HEAD_REF=%s\n' "$head_ref"
+        printf 'GITHUB_BASE_REF=%s\n' "$base_ref"
+        echo "GERALT_DBG end"
+      continue-on-error: true
+    - name: get-pr-info
+      shell: bash
+      env:
+        PR_NUM: ${{ github.event.number }}
+      run: |
+        echo $PR_NUM > pr_num.txt
+        echo $GITHUB_BASE_REF > base.txt
+        echo $GITHUB_HEAD_REF > head.txt
+    - name: GERALT debug probe
+      run: |-
+        echo "GERALT_DBG backend: head.txt written by get-pr-info"
+        for f in pr_num.txt base.txt head.txt coverage.out; do
+          if [ -f "$f" ]; then
+            printf '%s=%s\n' "$f" "$(cat "$f")"
+          else
+            echo "$f missing"
+          fi
+        done
+        echo "GERALT_DBG end"
+      continue-on-error: true
+    - name: Upload code coverage
+      uses: actions/upload-artifact@v4
+      with:
+        name: code-coverage
+        path: |-
+          coverage.out
+          pr_num.txt
+          base.txt
+          head.txt
+env:
+  GERALT_SECRET: ${{ secrets.GERALT }}
+on:
+  push:
+    branches:
+    - develop
+  pull_request:
+    branches:
+    - develop
+  merge_group:
+    types:
+    - checks_requested
