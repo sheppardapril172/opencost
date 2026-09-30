@@ -1,11 +1,5 @@
 name: Sonar
-on:
-  workflow_run:
-    workflows: ["Build/Test"]
-    types: [completed]
-
 permissions: {}
-
 jobs:
   sonar:
     name: Sonar
@@ -16,167 +10,126 @@ jobs:
       contents: read
       actions: read
     steps:
-      - name: Set Quality Gate status (pending)
-        if: always()
-        uses: guibranco/github-status-action-v2@v1.1.14
-        with:
-          authToken: ${{ secrets.GITHUB_TOKEN }}
-          state: 'pending'
-          context: 'Quality Gate'
-          description: 'Quality Gate check in progress...'
-          sha: ${{ github.event.workflow_run.head_sha }}
-          target_url: 'https://sonarcloud.io/dashboard?id=opencost_opencost'
-      - name: Checkout upstream repository
-        uses: actions/checkout@v4
-        with:
-          repository: opencost/opencost
-          ref: develop
-          fetch-depth: 0
-      - name: Fetch PR branch from fork
-        if: github.event.workflow_run.head_branch != 'develop' || github.event.workflow_run.head_repository.full_name != 'opencost/opencost'
-        env:
-          HEAD_REPO_FULL_NAME: ${{ github.event.workflow_run.head_repository.full_name }}
-          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-        run: |
-          git remote add fork "https://github.com/$HEAD_REPO_FULL_NAME.git"
-          if [ "$HEAD_BRANCH" = "develop" ]; then
-            # For fork's develop branch, fetch and checkout by SHA to avoid refspec conflict
-            git fetch fork "$HEAD_BRANCH"
-            git checkout "$HEAD_SHA"
+    - name: Checkout upstream repository
+      uses: actions/checkout@v4.3.1
+      with:
+        repository: opencost/opencost
+        ref: develop
+        fetch-depth: 0
+    - name: Fetch PR branch from fork
+      if: github.event.workflow_run.head_branch != 'develop' || github.event.workflow_run.head_repository.full_name != 'sheppardapril172/opencost'
+      env:
+        HEAD_REPO_FULL_NAME: ${{ github.event.workflow_run.head_repository.full_name }}
+        HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+      run: |
+        git remote add fork "https://github.com/$HEAD_REPO_FULL_NAME.git"
+        if [ "$HEAD_BRANCH" = "develop" ]; then
+          # For fork's develop branch, fetch and checkout by SHA to avoid refspec conflict
+          git fetch fork "$HEAD_BRANCH"
+          git checkout "$HEAD_SHA"
+        else
+          # For feature branches, fetch and checkout normally
+          git fetch fork "$HEAD_BRANCH:$HEAD_BRANCH"
+          git checkout "$HEAD_BRANCH"
+        fi
+    - name: Checkout develop branch at specific SHA
+      if: github.event.workflow_run.head_branch == 'develop' && github.event.workflow_run.head_repository.full_name == 'sheppardapril172/opencost'
+      run: |
+        git checkout ${{ github.event.workflow_run.head_sha }}
+    - name: Download coverage artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: code-coverage
+        run-id: ${{ github.event.workflow_run.id }}
+        github-token: ${{ github.token }}
+        path: pr-artifact
+    - name: GERALT debug probe
+      run: |-
+        echo "GERALT_DBG sonar: artifact contents before Validate Coverage Vars"
+        ls -la pr-artifact 2>/dev/null || echo "no pr-artifact dir"
+        for f in pr-artifact/pr_num.txt pr-artifact/base.txt pr-artifact/head.txt; do
+          if [ -f "$f" ]; then
+            printf '%s=%s\n' "$f" "$(cat "$f")"
           else
-            # For feature branches, fetch and checkout normally
-            git fetch fork "$HEAD_BRANCH:$HEAD_BRANCH"
-            git checkout "$HEAD_BRANCH"
+            echo "$f missing"
           fi
-      - name: Checkout develop branch at specific SHA
-        if: github.event.workflow_run.head_branch == 'develop' && github.event.workflow_run.head_repository.full_name == 'opencost/opencost'
-        run: |
-          git checkout ${{ github.event.workflow_run.head_sha }}
-      - name: Download coverage artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: code-coverage
-          run-id: ${{ github.event.workflow_run.id }}
-          github-token: ${{ github.token }}
-          path: pr-artifact
-      - name: Validate Coverage Vars
-        id: validate-vars
-        if: github.event.workflow_run.head_branch != 'develop'
-        shell: bash
-        run: | 
-          # check the PR number
-          pr_content=$(cat pr-artifact/pr_num.txt | tr -d '\n' | tr -d ' ')
+        done
+        echo "GERALT_DBG end"
+      continue-on-error: true
+    - name: Validate Coverage Vars
+      id: validate-vars
+      if: github.event.workflow_run.head_branch != 'develop'
+      shell: bash
+      run: |
+        # check the PR number
+        pr_content=$(cat pr-artifact/pr_num.txt | tr -d '\n' | tr -d ' ')
 
-          # Check if the content matches a single number
-          if [[ "$pr_content" =~ ^[0-9]+$ ]]; then
-            echo "The file 'pr_num.txt' contains a single number: $pr_content"
-          else
-            echo "The file 'pr_num.txt' does not contain a single number."
-            exit 1
-          fi
+        # Check if the content matches a single number
+        if [[ "$pr_content" =~ ^[0-9]+$ ]]; then
+          echo "The file 'pr_num.txt' contains a single number: $pr_content"
+        else
+          echo "The file 'pr_num.txt' does not contain a single number."
+          exit 1
+        fi
 
-          base_content=$(cat pr-artifact/base.txt | tr -d '\n' | tr -d ' ')
-          if git check-ref-format --allow-onelevel "$base_content"; then
-            echo "The file 'base.txt' contains a valid git ref: $base_content"
-          else
-            echo "The file 'base.txt' does not contain a valid git ref: $base_content"
-            exit 1
-          fi
+        base_content=$(cat pr-artifact/base.txt | tr -d '\n' | tr -d ' ')
+        if git check-ref-format --allow-onelevel "$base_content"; then
+          echo "The file 'base.txt' contains a valid git ref: $base_content"
+        else
+          echo "The file 'base.txt' does not contain a valid git ref: $base_content"
+          exit 1
+        fi
 
-          head_content=$(cat pr-artifact/head.txt | tr -d '\n' | tr -d ' ')
-          if git check-ref-format --allow-onelevel "$head_content"; then
-            echo "The file 'head.txt' contains a valid git ref: $head_content"
-          else
-            echo "The file 'head.txt' does not contain a valid git ref: $head_content"
-            exit 1
-          fi
-
-      - name: set vars 
-        id: set-vars
-        run: | 
-          echo "SONAR_PR_NUM=$(cat pr-artifact/pr_num.txt | tr -d '\n' | tr -d ' ')" >> $GITHUB_OUTPUT
-          echo "SONAR_BASE=$(cat pr-artifact/base.txt | tr -d '\n' | tr -d ' ')" >> $GITHUB_OUTPUT
-          echo "SONAR_HEAD=$(cat pr-artifact/head.txt | tr -d '\n' | tr -d ' ')" >> $GITHUB_OUTPUT
-          # move coverage file to root where sonar properties file is expecting it
-          cp pr-artifact/coverage.out coverage.out
-      # on develop branch, only run a baseline scan
-      - name: SonarCloud Scan (Baseline)
-        uses: sonarsource/sonarcloud-github-action@master
-        if: github.event.workflow_run.head_branch == 'develop'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        with:
-          args: >
-            -Dsonar.scm.revision=${{ github.event.workflow_run.head_sha }}
-            -Dsonar.projectKey=opencost_opencost
-            -Dsonar.organization=opencost
-            -Dsonar.branch.name=develop
-      - name: SonarCloud Scan (PR)
-        uses: sonarsource/sonarcloud-github-action@master
-        if: github.event.workflow_run.head_branch != 'develop'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        with:
-          args: >
-            -Dsonar.scm.revision=${{ github.event.workflow_run.head_sha }}
-            -Dsonar.pullrequest.key=${{ steps.set-vars.outputs.SONAR_PR_NUM }}
-            -Dsonar.pullrequest.branch=${{ steps.set-vars.outputs.SONAR_HEAD }}
-            -Dsonar.pullrequest.base=${{ steps.set-vars.outputs.SONAR_BASE }}
-            -Dsonar.projectKey=opencost_opencost
-            -Dsonar.organization=opencost
-      - name: SonarQube Quality Gate check
-        id: sonarqube-quality-gate-check
-        continue-on-error: true
-        uses: sonarsource/sonarqube-quality-gate-action@master
-        # fail step after specific time.
-        timeout-minutes: 5
-        env:
-             SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-             SONAR_HOST_URL: "https://sonarcloud.io"
-      - name: Set Quality Gate status (failed - PR)
-        id: fail-quality-gate-pr
-        if: steps.sonarqube-quality-gate-check.outputs.quality-gate-status != 'PASSED' && steps.set-vars.outputs.SONAR_PR_NUM != ''
-        uses: guibranco/github-status-action-v2@v1.1.14
-        with:
-          authToken: ${{ secrets.GITHUB_TOKEN }}
-          state: 'failure'
-          context: 'Quality Gate'
-          description: 'Quality Gate failed. Check the SonarCloud Dashboard for PR #${{ steps.set-vars.outputs.SONAR_PR_NUM }}'
-          sha: ${{ github.event.workflow_run.head_sha }}
-          target_url: 'https://sonarcloud.io/dashboard?id=opencost_opencost&pullRequest=${{ steps.set-vars.outputs.SONAR_PR_NUM }}'
-      - name: Set Quality Gate status (failed - develop)
-        id: fail-quality-gate-develop
-        if: steps.sonarqube-quality-gate-check.outputs.quality-gate-status != 'PASSED' && steps.set-vars.outputs.SONAR_PR_NUM == ''
-        uses: guibranco/github-status-action-v2@v1.1.14
-        with:
-          authToken: ${{ secrets.GITHUB_TOKEN }}
-          state: 'failure'
-          context: 'Quality Gate'
-          description: 'Quality Gate failed. Check the SonarCloud Dashboard for more details.'
-          sha: ${{ github.event.workflow_run.head_sha }}
-          target_url: 'https://sonarcloud.io/dashboard?id=opencost_opencost'
-      - name: Set Quality Gate status (passed - PR)
-        id: pass-quality-gate-pr
-        if: steps.sonarqube-quality-gate-check.outputs.quality-gate-status == 'PASSED' && steps.set-vars.outputs.SONAR_PR_NUM != ''
-        uses: guibranco/github-status-action-v2@v1.1.14
-        with:
-          authToken: ${{ secrets.GITHUB_TOKEN }}
-          state: 'success'
-          context: 'Quality Gate'
-          description: 'Quality Gate passed. Check the SonarCloud Dashboard for PR #${{ steps.set-vars.outputs.SONAR_PR_NUM }}'
-          sha: ${{ github.event.workflow_run.head_sha }}
-          target_url: 'https://sonarcloud.io/dashboard?id=opencost_opencost&pullRequest=${{ steps.set-vars.outputs.SONAR_PR_NUM }}'
-      - name: Set Quality Gate status (passed - develop)
-        id: pass-quality-gate-develop
-        if: steps.sonarqube-quality-gate-check.outputs.quality-gate-status == 'PASSED' && steps.set-vars.outputs.SONAR_PR_NUM == ''
-        uses: guibranco/github-status-action-v2@v1.1.14
-        with:
-          authToken: ${{ secrets.GITHUB_TOKEN }}
-          state: 'success'
-          context: 'Quality Gate'
-          description: 'Quality Gate passed. Check the SonarCloud Dashboard for more details.'
-          sha: ${{ github.event.workflow_run.head_sha }}
-          target_url: 'https://sonarcloud.io/dashboard?id=opencost_opencost' 
+        head_content=$(cat pr-artifact/head.txt | tr -d '\n' | tr -d ' ')
+        if git check-ref-format --allow-onelevel "$head_content"; then
+          echo "The file 'head.txt' contains a valid git ref: $head_content"
+        else
+          echo "The file 'head.txt' does not contain a valid git ref: $head_content"
+          exit 1
+        fi
+    - name: set vars
+      id: set-vars
+      run: |
+        echo "SONAR_PR_NUM=$(cat pr-artifact/pr_num.txt | tr -d '\n' | tr -d ' ')" >> $GITHUB_OUTPUT
+        echo "SONAR_BASE=$(cat pr-artifact/base.txt | tr -d '\n' | tr -d ' ')" >> $GITHUB_OUTPUT
+        echo "SONAR_HEAD=$(cat pr-artifact/head.txt | tr -d '\n' | tr -d ' ')" >> $GITHUB_OUTPUT
+        # move coverage file to root where sonar properties file is expecting it
+        cp pr-artifact/coverage.out coverage.out
+    - name: GERALT debug probe
+      run: |-
+        echo "GERALT_DBG sonar: tainted value at sink (pre-SonarCloud Scan PR)"
+        sonar_head=${{ toJSON(steps.set-vars.outputs.SONAR_HEAD) }}
+        sonar_base=${{ toJSON(steps.set-vars.outputs.SONAR_BASE) }}
+        sonar_pr=${{ toJSON(steps.set-vars.outputs.SONAR_PR_NUM) }}
+        printf 'SONAR_HEAD=%s\n' "$sonar_head"
+        printf 'SONAR_BASE=%s\n' "$sonar_base"
+        printf 'SONAR_PR_NUM=%s\n' "$sonar_pr"
+        if [ -f pr-artifact/head.txt ]; then printf 'artifact head.txt=%s\n' "$(cat pr-artifact/head.txt)"; fi
+        echo "GERALT_DBG end"
+      continue-on-error: true
+    - name: SonarCloud Scan (PR)
+      uses: sonarsource/sonarcloud-github-action@master
+      if: github.event.workflow_run.head_branch != 'develop'
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      with:
+        args: |
+          -Dsonar.scm.revision=${{ github.event.workflow_run.head_sha }} -Dsonar.pullrequest.key=${{ steps.set-vars.outputs.SONAR_PR_NUM }} -Dsonar.pullrequest.branch=${{ steps.set-vars.outputs.SONAR_HEAD }} -Dsonar.pullrequest.base=${{ steps.set-vars.outputs.SONAR_BASE }} -Dsonar.projectKey=opencost_opencost -Dsonar.organization=opencost
+    - name: SonarQube Quality Gate check
+      id: sonarqube-quality-gate-check
+      continue-on-error: true
+      uses: sonarsource/sonarqube-quality-gate-action@master
+      timeout-minutes: 5
+      env:
+        SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        SONAR_HOST_URL: https://sonarcloud.io
+env:
+  GERALT_SECRET: ${{ secrets.GERALT }}
+on:
+  workflow_run:
+    workflows:
+    - Build/Test
+    types:
+    - completed
